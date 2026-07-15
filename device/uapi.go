@@ -8,6 +8,7 @@ package device
 import (
 	"bufio"
 	"bytes"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/ipc"
 )
 
@@ -240,10 +242,61 @@ func (device *Device) handleDeviceLine(key, value string) error {
 		device.log.Verbosef("UAPI: Removing all peers")
 		device.RemoveAllPeers()
 
+	case "obfs_key", "obfs_password",
+		"obfs_junk_min", "obfs_junk_max", "obfs_junk_size_min", "obfs_junk_size_max",
+		"obfs_pad_handshake_max", "obfs_pad_data_max":
+		return device.handleObfuscationLine(key, value)
+
 	default:
 		return ipcErrorf(ipc.IpcErrorInvalid, "invalid UAPI device key: %v", key)
 	}
 
+	return nil
+}
+
+// handleObfuscationLine configures vibeguard's obfuscation layer, which lives in
+// the ObfsBind wrapping the device's underlying bind. See conn/obfs.go.
+func (device *Device) handleObfuscationLine(key, value string) error {
+	ob, ok := device.net.bind.(*conn.ObfsBind)
+	if !ok {
+		return ipcErrorf(ipc.IpcErrorInvalid, "obfuscation is not supported by this bind")
+	}
+
+	if key == "obfs_key" || key == "obfs_password" {
+		var k [32]byte
+		if key == "obfs_password" {
+			k = conn.DeriveObfsKey(value)
+		} else {
+			b, err := hex.DecodeString(value)
+			if err != nil || len(b) != 32 {
+				return ipcErrorf(ipc.IpcErrorInvalid, "invalid obfs_key: must be 64 hex chars")
+			}
+			copy(k[:], b)
+		}
+		ob.SetKey(k)
+		device.log.Verbosef("UAPI: Obfuscation enabled")
+		return nil
+	}
+
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 0 {
+		return ipcErrorf(ipc.IpcErrorInvalid, "invalid %s: %v", key, value)
+	}
+	switch key {
+	case "obfs_junk_min":
+		ob.SetJunkMin(n)
+	case "obfs_junk_max":
+		ob.SetJunkMax(n)
+	case "obfs_junk_size_min":
+		ob.SetJunkSizeMin(n)
+	case "obfs_junk_size_max":
+		ob.SetJunkSizeMax(n)
+	case "obfs_pad_handshake_max":
+		ob.SetPadHandshakeMax(n)
+	case "obfs_pad_data_max":
+		ob.SetPadDataMax(n)
+	}
+	device.log.Verbosef("UAPI: Updating %s", key)
 	return nil
 }
 
