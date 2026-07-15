@@ -29,10 +29,15 @@ const (
 	ENV_WG_OBFS_PAD_DATA_MAX      = "WG_OBFS_PAD_DATA_MAX"
 )
 
-// newBind constructs the device's bind, wrapped with the obfuscation layer and
-// configured from the environment. If no obfuscation key is set, the wrapper is a
-// transparent pass-through and the fork behaves as stock wireguard-go.
+// newBind constructs the device's bind. If WG_TRANSPORT=reality it builds the
+// REALITY stream transport (see transport_env.go); otherwise it uses the default
+// UDP path wrapped with the obfuscation layer. In both cases, with no obfuscation
+// key set the wrapper is a transparent pass-through and the fork behaves as stock
+// wireguard-go.
 func newBind() (conn.Bind, error) {
+	if b, err := newRealityBind(); err != nil || b != nil {
+		return b, err
+	}
 	bind := conn.NewObfsBind(conn.NewDefaultBind())
 	if err := configureObfsFromEnv(bind); err != nil {
 		return nil, err
