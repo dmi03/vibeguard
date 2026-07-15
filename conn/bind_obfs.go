@@ -9,6 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"golang.zx2c4.com/wireguard/shaper"
 )
 
 // ObfsBind wraps any conn.Bind and transparently applies vibeguard's obfuscation
@@ -162,6 +164,15 @@ func (b *ObfsBind) maybeSendDecoys(o *obfuscator, ep Endpoint) {
 		_ = b.inner.Send([][]byte{*p}, ep)
 		obfsBufPool.Put(p)
 	}
+}
+
+// Shaper returns the egress shaper of the wrapped bind, if any, so the UAPI can
+// reach it through the ObfsBind wrapper.
+func (b *ObfsBind) Shaper() *shaper.Shaper {
+	if s, ok := b.inner.(interface{ Shaper() *shaper.Shaper }); ok {
+		return s.Shaper()
+	}
+	return nil
 }
 
 func (b *ObfsBind) Close() error                             { return b.inner.Close() }

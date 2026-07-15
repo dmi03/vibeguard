@@ -77,6 +77,98 @@ Obfuscation adds a constant 42 bytes of overhead per datagram (plus any padding)
 To avoid IP fragmentation, lower the interface MTU accordingly — e.g. set
 `MTU = 1380` in your `wg-quick` config when obfuscation is enabled.
 
+## Pluggable transports: REALITY (TLS 1.3 mimicry)
+
+Uniform-random UDP (the obfuscation above) defeats protocol fingerprinting, but
+some censors throttle or drop *unclassifiable* UDP outright (this is why QUIC/
+HTTP-3 is degraded in Russia — DPI cannot inspect it). For those conditions this
+fork can carry WireGuard over a **REALITY** stream instead of UDP: the connection
+looks like a genuine TLS 1.3 visit to a real, allow-listed website, and an
+unauthorized prober is transparently forwarded to that real site.
+
+The transport is pluggable (`transport/` package). UDP remains the default, fast
+path (`conn.Bind`, unchanged). REALITY is an alternative selected with
+`WG_TRANSPORT=reality`; WireGuard packets (optionally still AEAD-obfuscated) are
+length-framed and carried as the payload of the REALITY session via the
+`conn.StreamBind` bridge.
+
+> **Trade-offs.** REALITY rides TCP, so tunnelling UDP over it incurs TCP-over-TCP
+> behaviour under loss — use it as a fallback when UDP is blocked, not as the
+> default. REALITY is inherently client↔server: one side listens, the other dials.
+
+### Generating keys
+
+REALITY authenticates with an X25519 keypair (same curve as WireGuard):
+
+```
+priv_b64=$(wg genkey); pub_b64=$(printf '%s' "$priv_b64" | wg pubkey)
+printf 'PRIVATE_KEY (hex): '; printf '%s' "$priv_b64" | base64 -d | xxd -p -c256
+printf 'PUBLIC_KEY  (hex): '; printf '%s' "$pub_b64"  | base64 -d | xxd -p -c256
+short_id=$(openssl rand -hex 8)   # 0..8 bytes, even hex length
+```
+
+### Server
+
+```
+WG_TRANSPORT=reality \
+WG_ROLE=server \
+WG_REALITY_DEST=www.microsoft.com:443 \
+WG_REALITY_SERVERNAMES=www.microsoft.com \
+WG_REALITY_PRIVATE_KEY=<priv_hex> \
+WG_REALITY_SHORT_IDS=<short_id> \
+wireguard-go wg0
+```
+
+Set the WireGuard `ListenPort` to the port clients dial (e.g. 443).
+
+### Client
+
+```
+WG_TRANSPORT=reality \
+WG_ROLE=client \
+WG_REALITY_SERVER=<server_ip>:443 \
+WG_REALITY_SERVERNAMES=www.microsoft.com \
+WG_REALITY_PUBLIC_KEY=<pub_hex> \
+WG_REALITY_SHORT_ID=<short_id> \
+WG_REALITY_FINGERPRINT=chrome \
+wireguard-go wg0
+```
+
+Set the peer `Endpoint` in the WireGuard config to the same `<server_ip>:443`.
+
+### Choosing the camouflage `dest`
+
+`WG_REALITY_DEST` (and the matching `WG_REALITY_SERVERNAMES`) is the real site your
+traffic impersonates. Pick it carefully — a poor choice is itself a signal:
+
+- **Must serve TLS 1.3 and support X25519** key exchange (REALITY relays that
+  site's real handshake). Verify with `openssl s_client -connect host:443 -tls1_3`.
+- **High-traffic site on a shared IP / large CDN**, so your flows blend into a
+  large crowd going to the same address.
+- **Reachable and *not blocked* from the censored region**, and ideally
+  low-latency from the server (it is dialed during every handshake).
+- **Not a domain you own or control**, and not the server's own domain — it must be
+  an unrelated, popular third party.
+
+### Traffic shaper (optional)
+
+An egress shaper (`shaper/` package) resists traffic-analysis without touching the
+WireGuard core: randomized inter-packet jitter, an egress byte-rate cap to break
+the symmetric upload/download profile of a VPN, and extra jitter on small
+keepalive packets. Configure via env (or the UAPI keys `shaper_*`):
+
+```
+WG_SHAPER=1
+WG_SHAPER_JITTER_MIN_MS=0
+WG_SHAPER_JITTER_MAX_MS=8
+WG_SHAPER_KEEPALIVE_JITTER_MS=250
+WG_SHAPER_RATE_BYTES_PER_SEC=0        # 0 = unlimited
+```
+
+> **Licensing note.** The REALITY client handshake in
+> `transport/reality_client.go` is ported from Xray-core and is licensed
+> **MPL-2.0** (noted in that file's header). Everything else in this fork is MIT.
+
 ## Platforms
 
 ### Linux

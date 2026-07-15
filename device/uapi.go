@@ -21,6 +21,7 @@ import (
 
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/ipc"
+	"golang.zx2c4.com/wireguard/shaper"
 )
 
 type IPCError struct {
@@ -247,6 +248,10 @@ func (device *Device) handleDeviceLine(key, value string) error {
 		"obfs_pad_handshake_max", "obfs_pad_data_max":
 		return device.handleObfuscationLine(key, value)
 
+	case "shaper_enabled", "shaper_jitter_min_ms", "shaper_jitter_max_ms",
+		"shaper_keepalive_jitter_ms", "shaper_small_packet_max", "shaper_rate_bytes_per_sec":
+		return device.handleShaperLine(key, value)
+
 	default:
 		return ipcErrorf(ipc.IpcErrorInvalid, "invalid UAPI device key: %v", key)
 	}
@@ -297,6 +302,47 @@ func (device *Device) handleObfuscationLine(key, value string) error {
 		ob.SetPadDataMax(n)
 	}
 	device.log.Verbosef("UAPI: Updating %s", key)
+	return nil
+}
+
+// handleShaperLine live-updates the egress traffic shaper (see shaper package),
+// reached through the bind (StreamBind, possibly wrapped by ObfsBind).
+func (device *Device) handleShaperLine(key, value string) error {
+	sh := shaperFromBind(device.net.bind)
+	if sh == nil {
+		return ipcErrorf(ipc.IpcErrorInvalid, "traffic shaper is not available on this transport")
+	}
+
+	if key == "shaper_enabled" {
+		sh.SetEnabled(value == "true" || value == "1")
+		device.log.Verbosef("UAPI: Updating shaper_enabled")
+		return nil
+	}
+
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 0 {
+		return ipcErrorf(ipc.IpcErrorInvalid, "invalid %s: %v", key, value)
+	}
+	switch key {
+	case "shaper_jitter_min_ms":
+		sh.SetJitterMinMs(n)
+	case "shaper_jitter_max_ms":
+		sh.SetJitterMaxMs(n)
+	case "shaper_keepalive_jitter_ms":
+		sh.SetKeepaliveJitterMs(n)
+	case "shaper_small_packet_max":
+		sh.SetSmallPacketMax(n)
+	case "shaper_rate_bytes_per_sec":
+		sh.SetRateBytesPerSec(n)
+	}
+	device.log.Verbosef("UAPI: Updating %s", key)
+	return nil
+}
+
+func shaperFromBind(b conn.Bind) *shaper.Shaper {
+	if s, ok := b.(interface{ Shaper() *shaper.Shaper }); ok {
+		return s.Shaper()
+	}
 	return nil
 }
 
