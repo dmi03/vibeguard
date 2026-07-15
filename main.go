@@ -15,7 +15,6 @@ import (
 	"strconv"
 
 	"golang.org/x/sys/unix"
-	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/ipc"
 	"golang.zx2c4.com/wireguard/tun"
@@ -222,7 +221,13 @@ func main() {
 		return
 	}
 
-	device := device.NewDevice(tdev, conn.NewDefaultBind(), logger)
+	bind, err := newBind()
+	if err != nil {
+		logger.Errorf("Failed to configure obfuscation: %v", err)
+		os.Exit(ExitSetupFailed)
+	}
+
+	device := device.NewDevice(tdev, bind, logger)
 
 	logger.Verbosef("Device started")
 

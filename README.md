@@ -22,6 +22,61 @@ When an interface is running, you may use [`wg(8)`](https://git.zx2c4.com/wiregu
 
 To run with more logging you may set the environment variable `LOG_LEVEL=debug`.
 
+## Obfuscation (censorship circumvention)
+
+This fork adds a native traffic-obfuscation layer that makes WireGuard datagrams
+unclassifiable to DPI systems (such as Russia's TSPU/RKN) which fingerprint
+WireGuard by its fixed message-type bytes, its fixed handshake sizes (148/92/64
+bytes), and its constant field layout.
+
+When enabled, every UDP datagram is wrapped in an AEAD envelope keyed by a
+pre-shared **obfuscation key**:
+
+```
+[ 24-byte random salt ][ XChaCha20-Poly1305( key, salt, [len][packet][padding] ) ]
+```
+
+After the random salt the entire payload is ciphertext, so there are no magic
+bytes, no zero fields, and — with random padding on handshake packets — no fixed
+sizes. A random number of random-content decoy datagrams is also sent ahead of each
+fresh handshake, breaking the "first UDP packet is 148 bytes" heuristic. Because a
+censor without the key cannot forge an authenticating datagram, the port silently
+drops probes and never reveals a WireGuard fingerprint (anti active-probing).
+
+This is a *masking* layer only: WireGuard's Noise handshake remains the real
+security boundary. Both peers must run this fork and share the same obfuscation
+key. When no key is configured, the layer is a transparent pass-through and the
+program behaves as stock wireguard-go.
+
+### Configuration
+
+The simplest way is via environment variables at process start (all optional
+except the key/password):
+
+```
+WG_OBFS_PASSWORD=your-shared-secret wireguard-go wg0
+```
+
+| Variable | Meaning | Default |
+| --- | --- | --- |
+| `WG_OBFS_KEY` | 64 hex chars (32-byte key) | — |
+| `WG_OBFS_PASSWORD` | any string, hashed to a key (alternative to `WG_OBFS_KEY`) | — |
+| `WG_OBFS_JUNK_MIN` / `WG_OBFS_JUNK_MAX` | decoy packet count range | 2 / 5 |
+| `WG_OBFS_JUNK_SIZE_MIN` / `WG_OBFS_JUNK_SIZE_MAX` | decoy size range (bytes) | 40 / 1200 |
+| `WG_OBFS_PAD_HANDSHAKE_MAX` | max random padding on handshake packets | 256 |
+| `WG_OBFS_PAD_DATA_MAX` | max random padding on transport packets | 0 |
+
+The same settings can also be applied over the UAPI socket using the device-level
+keys `obfs_key`, `obfs_password`, `obfs_junk_min`, `obfs_junk_max`,
+`obfs_junk_size_min`, `obfs_junk_size_max`, `obfs_pad_handshake_max`, and
+`obfs_pad_data_max`.
+
+### MTU
+
+Obfuscation adds a constant 42 bytes of overhead per datagram (plus any padding).
+To avoid IP fragmentation, lower the interface MTU accordingly — e.g. set
+`MTU = 1380` in your `wg-quick` config when obfuscation is enabled.
+
 ## Platforms
 
 ### Linux
